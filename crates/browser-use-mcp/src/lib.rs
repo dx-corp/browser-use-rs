@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 
-use browser_use_cdp::DevToolsEndpoint;
+use browser_use_cdp::{BrowserProfile, DevToolsEndpoint};
 use browser_use_core::{
     ActionResult, AgentHistory, AgentHistoryReplayRun, AgentSettings, schema_to_compat_value,
 };
@@ -91,7 +91,7 @@ pub struct CallToolParams {
 }
 
 /// Input for `browser_use_state`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct StateToolInput {
     /// Existing persistent session id, if reusing one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,6 +99,9 @@ pub struct StateToolInput {
     /// Optional URL to navigate to before capturing state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Browser launch and URL policy applied to a new or reconnected session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_profile: Option<BrowserProfile>,
     /// Whether to include a screenshot in returned state.
     #[serde(default = "default_true")]
     pub screenshot: bool,
@@ -113,6 +116,9 @@ pub struct ActionsToolInput {
     /// Optional URL to navigate to before executing actions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Browser launch and URL policy applied to a new or reconnected session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_profile: Option<BrowserProfile>,
     /// Browser actions to execute.
     #[serde(default)]
     pub actions: Vec<BrowserAction>,
@@ -130,6 +136,9 @@ pub struct ReplayToolInput {
     /// Optional URL to navigate to before replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Browser launch and URL policy applied to a new or reconnected session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_profile: Option<BrowserProfile>,
     /// Saved agent history to replay.
     pub history: AgentHistory,
 }
@@ -235,7 +244,7 @@ pub enum SessionOperation {
 }
 
 /// Input for `browser_use_session`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionToolInput {
     /// Operation to perform.
     pub operation: SessionOperation,
@@ -245,6 +254,9 @@ pub struct SessionToolInput {
     /// Optional start URL for session creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Browser launch and URL policy applied when starting or reconnecting a session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_profile: Option<BrowserProfile>,
     /// Whether session state should include a screenshot when returned.
     #[serde(default = "default_true")]
     pub screenshot: bool,
@@ -497,6 +509,50 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_tools_accept_typed_browser_profiles() {
+        let state: StateToolInput = serde_json::from_value(serde_json::json!({
+            "url": "data:text/html,ok",
+            "browser_profile": {
+                "allowed_domains": ["example.com"],
+                "block_ip_addresses": true
+            }
+        }))
+        .expect("state input");
+
+        let profile = state.browser_profile.expect("browser profile");
+        assert_eq!(profile.allowed_domains, ["example.com"]);
+        assert!(profile.block_ip_addresses);
+
+        for tool_name in [
+            STATE_TOOL_NAME,
+            ACTIONS_TOOL_NAME,
+            REPLAY_TOOL_NAME,
+            SESSION_TOOL_NAME,
+        ] {
+            let tool = tool_manifest()
+                .into_iter()
+                .find(|tool| tool.name == tool_name)
+                .expect("browser tool");
+            let schema = serde_json::to_string(&tool.input_schema).expect("schema");
+            assert!(
+                schema.contains("browser_profile"),
+                "{tool_name} must expose browser_profile"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_tool_does_not_accept_a_browser_profile() {
+        let tool = tool_manifest()
+            .into_iter()
+            .find(|tool| tool.name == AGENT_TOOL_NAME)
+            .expect("agent tool");
+        let schema = serde_json::to_string(&tool.input_schema).expect("schema");
+
+        assert!(!schema.contains("browser_profile"));
+    }
 
     #[test]
     fn manifest_exposes_expected_tools() {
