@@ -787,6 +787,67 @@ fn mcp_session_plan_persists_implicit_session_ids() {
 }
 
 #[test]
+fn mcp_profile_reconnect_requires_the_identical_profile() {
+    let profile = BrowserProfile {
+        allowed_domains: vec!["example.com".to_string()],
+        block_ip_addresses: true,
+        ..BrowserProfile::default()
+    };
+    let fingerprint = browser_profile_fingerprint(&profile).expect("fingerprint");
+
+    assert_eq!(
+        validate_mcp_reconnect_profile(None, None).expect("legacy reconnect"),
+        None
+    );
+    assert_eq!(
+        validate_mcp_reconnect_profile(Some(&fingerprint), Some(&profile))
+            .expect("profiled reconnect"),
+        Some(fingerprint.clone())
+    );
+    assert!(validate_mcp_reconnect_profile(Some(&fingerprint), None).is_err());
+    assert!(validate_mcp_reconnect_profile(None, Some(&profile)).is_err());
+
+    let changed = BrowserProfile {
+        allowed_domains: vec!["other.example".to_string()],
+        ..profile
+    };
+    let error = validate_mcp_reconnect_profile(Some(&fingerprint), Some(&changed))
+        .expect_err("changed profile must fail");
+    assert!(error.to_string().contains("does not match"));
+}
+
+#[tokio::test]
+async fn mcp_profile_blocks_disallowed_navigation_before_network_access() {
+    let mut runtime = McpRuntime::default();
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 41,
+        "method": "tools/call",
+        "params": {
+            "name": browser_use_mcp::STATE_TOOL_NAME,
+            "arguments": {
+                "url": "https://blocked.invalid/path",
+                "screenshot": false,
+                "browser_profile": {
+                    "allowed_domains": ["allowed.example"],
+                    "block_ip_addresses": true
+                }
+            }
+        }
+    });
+
+    let response = handle_mcp_message(&request.to_string(), &mut runtime)
+        .await
+        .expect("response");
+    assert_eq!(response["result"]["isError"], true);
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error text");
+    assert!(text.contains("navigation blocked by browser profile policy"));
+    assert!(text.contains("not_in_allowed_domains"));
+}
+
+#[test]
 fn session_record_status_is_backward_compatible() {
     let record: StoredSession = serde_json::from_value(serde_json::json!({
         "id": "legacy",
@@ -800,6 +861,7 @@ fn session_record_status_is_backward_compatible() {
     .expect("legacy record");
 
     assert_eq!(record.status, None);
+    assert_eq!(record.browser_profile_fingerprint, None);
     assert_eq!(
         session_status_with_checker(&record, |_| false),
         browser_use_mcp::SessionStatus::Stale
@@ -815,6 +877,32 @@ fn session_record_status_is_backward_compatible() {
         })
         .status,
         Some(browser_use_mcp::SessionStatus::Unknown)
+    );
+}
+
+#[test]
+fn browser_profile_fingerprint_is_deterministic_and_secret_free() {
+    let mut profile = BrowserProfile {
+        allowed_domains: vec!["example.com".to_string()],
+        block_ip_addresses: true,
+        cloud_api_key: Some("super-secret-cloud-key".to_string()),
+        headers: Some(std::collections::BTreeMap::from([(
+            "Authorization".to_string(),
+            "Bearer super-secret-header".to_string(),
+        )])),
+        ..BrowserProfile::default()
+    };
+
+    let first = browser_profile_fingerprint(&profile).expect("fingerprint");
+    let second = browser_profile_fingerprint(&profile).expect("fingerprint");
+    assert_eq!(first, second);
+    assert_eq!(first.len(), 64);
+    assert!(!first.contains("super-secret"));
+
+    profile.allowed_domains.push("other.example".to_string());
+    assert_ne!(
+        first,
+        browser_profile_fingerprint(&profile).expect("changed fingerprint")
     );
 }
 
