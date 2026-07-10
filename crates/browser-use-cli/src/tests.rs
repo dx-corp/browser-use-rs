@@ -787,6 +787,67 @@ fn mcp_session_plan_persists_implicit_session_ids() {
 }
 
 #[test]
+fn mcp_profile_reconnect_requires_the_identical_profile() {
+    let profile = BrowserProfile {
+        allowed_domains: vec!["example.com".to_string()],
+        block_ip_addresses: true,
+        ..BrowserProfile::default()
+    };
+    let fingerprint = browser_profile_fingerprint(&profile).expect("fingerprint");
+
+    assert_eq!(
+        validate_mcp_reconnect_profile(None, None).expect("legacy reconnect"),
+        None
+    );
+    assert_eq!(
+        validate_mcp_reconnect_profile(Some(&fingerprint), Some(&profile))
+            .expect("profiled reconnect"),
+        Some(fingerprint.clone())
+    );
+    assert!(validate_mcp_reconnect_profile(Some(&fingerprint), None).is_err());
+    assert!(validate_mcp_reconnect_profile(None, Some(&profile)).is_err());
+
+    let changed = BrowserProfile {
+        allowed_domains: vec!["other.example".to_string()],
+        ..profile
+    };
+    let error = validate_mcp_reconnect_profile(Some(&fingerprint), Some(&changed))
+        .expect_err("changed profile must fail");
+    assert!(error.to_string().contains("does not match"));
+}
+
+#[tokio::test]
+async fn mcp_profile_blocks_disallowed_navigation_before_network_access() {
+    let mut runtime = McpRuntime::default();
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 41,
+        "method": "tools/call",
+        "params": {
+            "name": browser_use_mcp::STATE_TOOL_NAME,
+            "arguments": {
+                "url": "https://blocked.invalid/path",
+                "screenshot": false,
+                "browser_profile": {
+                    "allowed_domains": ["allowed.example"],
+                    "block_ip_addresses": true
+                }
+            }
+        }
+    });
+
+    let response = handle_mcp_message(&request.to_string(), &mut runtime)
+        .await
+        .expect("response");
+    assert_eq!(response["result"]["isError"], true);
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error text");
+    assert!(text.contains("navigation blocked by browser profile policy"));
+    assert!(text.contains("not_in_allowed_domains"));
+}
+
+#[test]
 fn session_record_status_is_backward_compatible() {
     let record: StoredSession = serde_json::from_value(serde_json::json!({
         "id": "legacy",

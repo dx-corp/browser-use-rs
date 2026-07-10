@@ -389,9 +389,14 @@ fn http_reason(status: u16) -> &'static str {
     }
 }
 
+struct McpSessionEntry {
+    session: Arc<CdpBrowserSession>,
+    browser_profile_fingerprint: Option<String>,
+}
+
 #[derive(Default)]
 pub(crate) struct McpRuntime {
-    sessions: HashMap<String, Arc<CdpBrowserSession>>,
+    sessions: HashMap<String, McpSessionEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,6 +429,7 @@ impl McpRuntime {
         &mut self,
         session_id: &str,
         url: Option<String>,
+        browser_profile: Option<BrowserProfile>,
     ) -> anyhow::Result<Arc<CdpBrowserSession>> {
         let record_path = session_record_path(session_id)?;
         match mcp_session_plan(
@@ -433,11 +439,15 @@ impl McpRuntime {
             session_id,
         )? {
             McpSessionPlan::ReuseInMemory => {
-                let session = self
+                let entry = self
                     .sessions
                     .get(session_id)
-                    .cloned()
                     .expect("session plan confirmed in-memory session");
+                validate_mcp_reconnect_profile(
+                    entry.browser_profile_fingerprint.as_deref(),
+                    browser_profile.as_ref(),
+                )?;
+                let session = Arc::clone(&entry.session);
                 if let Some(url) = url {
                     session.navigate(&url, false).await?;
                     sleep(Duration::from_millis(150)).await;
@@ -446,24 +456,70 @@ impl McpRuntime {
             }
             McpSessionPlan::ReconnectPersistentRecord => {
                 let record = read_session_record(session_id)?;
-                let session = Arc::new(CdpBrowserSession::connect(record.endpoint).await?);
+                let fingerprint = validate_mcp_reconnect_profile(
+                    record.browser_profile_fingerprint.as_deref(),
+                    browser_profile.as_ref(),
+                )?;
+                let session = Arc::new(match browser_profile.as_ref() {
+                    Some(profile) => {
+                        CdpBrowserSession::connect_with_profile(record.endpoint, profile).await?
+                    }
+                    None => CdpBrowserSession::connect(record.endpoint).await?,
+                });
                 if let Some(url) = url {
                     session.navigate(&url, false).await?;
                     sleep(Duration::from_millis(150)).await;
                 }
-                self.sessions
-                    .insert(session_id.to_owned(), Arc::clone(&session));
+                self.sessions.insert(
+                    session_id.to_owned(),
+                    McpSessionEntry {
+                        session: Arc::clone(&session),
+                        browser_profile_fingerprint: fingerprint,
+                    },
+                );
                 Ok(session)
             }
             McpSessionPlan::CreatePersistentRecord => {
                 let url = url.expect("session plan confirmed URL is present");
-                let (_record, session, _state) =
-                    start_persistent_session(session_id, &url, false).await?;
+                let (record, session, _state) = match browser_profile {
+                    Some(profile) => {
+                        start_persistent_session_with_profile(session_id, &url, false, profile)
+                            .await?
+                    }
+                    None => start_persistent_session(session_id, &url, false).await?,
+                };
                 let session = Arc::new(session);
-                self.sessions
-                    .insert(session_id.to_owned(), Arc::clone(&session));
+                self.sessions.insert(
+                    session_id.to_owned(),
+                    McpSessionEntry {
+                        session: Arc::clone(&session),
+                        browser_profile_fingerprint: record.browser_profile_fingerprint,
+                    },
+                );
                 Ok(session)
             }
+        }
+    }
+}
+
+pub(crate) fn validate_mcp_reconnect_profile(
+    expected_fingerprint: Option<&str>,
+    supplied_profile: Option<&BrowserProfile>,
+) -> anyhow::Result<Option<String>> {
+    match (expected_fingerprint, supplied_profile) {
+        (None, None) => Ok(None),
+        (Some(expected), Some(profile)) => {
+            let supplied = browser_profile_fingerprint(profile)?;
+            if supplied != expected {
+                anyhow::bail!("browser profile does not match the session launch policy");
+            }
+            Ok(Some(supplied))
+        }
+        (Some(_), None) => {
+            anyhow::bail!("browser profile is required to reconnect this profiled session")
+        }
+        (None, Some(_)) => {
+            anyhow::bail!("browser profile cannot be added to an existing unprofiled session")
         }
     }
 }
@@ -553,11 +609,17 @@ async fn execute_mcp_tool(
         browser_use_mcp::STATE_TOOL_NAME => {
             let input: browser_use_mcp::StateToolInput = serde_json::from_value(arguments)?;
             let state = if let Some(session_id) = input.session_id {
-                let session = runtime.session(&session_id, input.url).await?;
+                let session = runtime
+                    .session(&session_id, input.url, input.browser_profile)
+                    .await?;
                 session.state(input.screenshot).await?
             } else {
                 let url = require_mcp_url(input.url)?;
-                let session = launch_and_navigate(&url).await?;
+                let session = launch_and_navigate_with_profile(
+                    &url,
+                    input.browser_profile.unwrap_or_default(),
+                )
+                .await?;
                 session.state(input.screenshot).await?
             };
             let output = browser_use_mcp::StateToolOutput { state };
@@ -568,9 +630,17 @@ async fn execute_mcp_tool(
         browser_use_mcp::ACTIONS_TOOL_NAME => {
             let input: browser_use_mcp::ActionsToolInput = serde_json::from_value(arguments)?;
             let session = if let Some(session_id) = input.session_id {
-                runtime.session(&session_id, input.url).await?
+                runtime
+                    .session(&session_id, input.url, input.browser_profile)
+                    .await?
             } else {
-                Arc::new(launch_and_navigate(&require_mcp_url(input.url)?).await?)
+                Arc::new(
+                    launch_and_navigate_with_profile(
+                        &require_mcp_url(input.url)?,
+                        input.browser_profile.unwrap_or_default(),
+                    )
+                    .await?,
+                )
             };
             let mut executor = BrowserActionExecutor::new(session);
             let results = executor.execute_sequence(&input.actions).await;
@@ -583,9 +653,17 @@ async fn execute_mcp_tool(
         browser_use_mcp::REPLAY_TOOL_NAME => {
             let input: browser_use_mcp::ReplayToolInput = serde_json::from_value(arguments)?;
             let session = if let Some(session_id) = input.session_id {
-                runtime.session(&session_id, input.url).await?
+                runtime
+                    .session(&session_id, input.url, input.browser_profile)
+                    .await?
             } else {
-                Arc::new(launch_and_navigate(&require_mcp_url(input.url)?).await?)
+                Arc::new(
+                    launch_and_navigate_with_profile(
+                        &require_mcp_url(input.url)?,
+                        input.browser_profile.unwrap_or_default(),
+                    )
+                    .await?,
+                )
             };
             let mut executor = BrowserActionExecutor::new(session);
             let replay = executor.replay_history(&input.history).await?;
@@ -609,7 +687,7 @@ async fn execute_mcp_tool(
                 structured_output_mode,
             )?;
             let session = if let Some(session_id) = input.session_id {
-                runtime.session(&session_id, input.url).await?
+                runtime.session(&session_id, input.url, None).await?
             } else {
                 Arc::new(launch_and_navigate(&require_mcp_url(input.url)?).await?)
             };
@@ -629,9 +707,27 @@ async fn execute_mcp_tool(
                 browser_use_mcp::SessionOperation::Start => {
                     let session_id = require_mcp_session_id(input.session_id)?;
                     let url = require_mcp_url(input.url)?;
-                    let (record, session, state) =
-                        start_persistent_session(&session_id, &url, input.screenshot).await?;
-                    runtime.sessions.insert(session_id, Arc::new(session));
+                    let (record, session, state) = match input.browser_profile {
+                        Some(profile) => {
+                            start_persistent_session_with_profile(
+                                &session_id,
+                                &url,
+                                input.screenshot,
+                                profile,
+                            )
+                            .await?
+                        }
+                        None => {
+                            start_persistent_session(&session_id, &url, input.screenshot).await?
+                        }
+                    };
+                    runtime.sessions.insert(
+                        session_id,
+                        McpSessionEntry {
+                            session: Arc::new(session),
+                            browser_profile_fingerprint: record.browser_profile_fingerprint.clone(),
+                        },
+                    );
                     browser_use_mcp::SessionToolOutput {
                         session: Some(record),
                         sessions: Vec::new(),

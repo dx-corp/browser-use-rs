@@ -39,17 +39,18 @@ use llm_config::{
 use mcp_daemon::{
     DaemonLifecycleFiles, HttpRequest, McpRuntime, McpSessionPlan, handle_http_request,
     handle_mcp_message, http_request_authorized, mcp_session_plan, read_http_request,
+    validate_mcp_reconnect_profile,
 };
 use mcp_daemon::{DaemonLifecycleOptions, run_daemon, run_mcp_stdio};
 #[cfg(test)]
 use session::{
-    SessionCleanupDecision, StoredSession, annotate_session_status, browser_profile_fingerprint,
-    session_cleanup_decision, session_status_with_checker,
+    SessionCleanupDecision, StoredSession, annotate_session_status, session_cleanup_decision,
+    session_status_with_checker,
 };
 use session::{
-    SessionCommand, cleanup_persistent_sessions, list_session_records, read_agent_history,
-    read_session_record, run_session_command, session_record_path, start_persistent_session,
-    stop_persistent_session,
+    SessionCommand, browser_profile_fingerprint, cleanup_persistent_sessions, list_session_records,
+    read_agent_history, read_session_record, run_session_command, session_record_path,
+    start_persistent_session, start_persistent_session_with_profile, stop_persistent_session,
 };
 
 #[derive(Debug, Parser)]

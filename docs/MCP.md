@@ -37,6 +37,15 @@ Current tool contracts:
   typed agent history.
 - `browser_use_session`: start, stop, and list persistent browser sessions.
 
+`browser_use_state`, `browser_use_actions`, `browser_use_replay`, and
+`browser_use_session` accept an optional typed `browser_profile`. New one-shot
+browsers apply that profile directly. Persistent sessions bind the canonical
+profile to the session record with a SHA-256 fingerprint; reconnecting or
+reusing a profiled session requires the identical profile so a server restart
+cannot silently drop URL policy. The serialized profile and its credentials
+are never stored in the session record. Legacy sessions created without a
+profile remain reusable only without one.
+
 `tools/list` includes both `inputSchema` and `outputSchema` for each tool.
 `outputSchema` describes the JSON object returned in the call result's
 `structuredContent` field.
