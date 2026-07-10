@@ -800,6 +800,7 @@ fn session_record_status_is_backward_compatible() {
     .expect("legacy record");
 
     assert_eq!(record.status, None);
+    assert_eq!(record.browser_profile_fingerprint, None);
     assert_eq!(
         session_status_with_checker(&record, |_| false),
         browser_use_mcp::SessionStatus::Stale
@@ -815,6 +816,32 @@ fn session_record_status_is_backward_compatible() {
         })
         .status,
         Some(browser_use_mcp::SessionStatus::Unknown)
+    );
+}
+
+#[test]
+fn browser_profile_fingerprint_is_deterministic_and_secret_free() {
+    let mut profile = BrowserProfile {
+        allowed_domains: vec!["example.com".to_string()],
+        block_ip_addresses: true,
+        cloud_api_key: Some("super-secret-cloud-key".to_string()),
+        headers: Some(std::collections::BTreeMap::from([(
+            "Authorization".to_string(),
+            "Bearer super-secret-header".to_string(),
+        )])),
+        ..BrowserProfile::default()
+    };
+
+    let first = browser_profile_fingerprint(&profile).expect("fingerprint");
+    let second = browser_profile_fingerprint(&profile).expect("fingerprint");
+    assert_eq!(first, second);
+    assert_eq!(first.len(), 64);
+    assert!(!first.contains("super-secret"));
+
+    profile.allowed_domains.push("other.example".to_string());
+    assert_ne!(
+        first,
+        browser_profile_fingerprint(&profile).expect("changed fingerprint")
     );
 }
 

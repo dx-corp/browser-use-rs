@@ -43,8 +43,8 @@ use mcp_daemon::{
 use mcp_daemon::{DaemonLifecycleOptions, run_daemon, run_mcp_stdio};
 #[cfg(test)]
 use session::{
-    SessionCleanupDecision, StoredSession, annotate_session_status, session_cleanup_decision,
-    session_status_with_checker,
+    SessionCleanupDecision, StoredSession, annotate_session_status, browser_profile_fingerprint,
+    session_cleanup_decision, session_status_with_checker,
 };
 use session::{
     SessionCommand, cleanup_persistent_sessions, list_session_records, read_agent_history,

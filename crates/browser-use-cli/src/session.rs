@@ -63,6 +63,32 @@ pub(crate) async fn start_persistent_session(
     CdpBrowserSession,
     browser_use_dom::BrowserStateSummary,
 )> {
+    start_persistent_session_inner(id, url, screenshot, None).await
+}
+
+pub(crate) async fn start_persistent_session_with_profile(
+    id: &str,
+    url: &str,
+    screenshot: bool,
+    profile: BrowserProfile,
+) -> anyhow::Result<(
+    StoredSession,
+    CdpBrowserSession,
+    browser_use_dom::BrowserStateSummary,
+)> {
+    start_persistent_session_inner(id, url, screenshot, Some(profile)).await
+}
+
+async fn start_persistent_session_inner(
+    id: &str,
+    url: &str,
+    screenshot: bool,
+    requested_profile: Option<BrowserProfile>,
+) -> anyhow::Result<(
+    StoredSession,
+    CdpBrowserSession,
+    browser_use_dom::BrowserStateSummary,
+)> {
     validate_session_id(id)?;
     let path = session_record_path(id)?;
     if path.exists() {
@@ -70,14 +96,16 @@ pub(crate) async fn start_persistent_session(
     }
     let user_data_dir = session_user_data_dir(id)?;
     std::fs::create_dir_all(&user_data_dir)?;
-    let profile = BrowserProfile {
-        user_data_dir: Some(user_data_dir.clone()),
-        ..BrowserProfile::default()
-    };
+    let browser_profile_fingerprint = requested_profile
+        .as_ref()
+        .map(browser_profile_fingerprint)
+        .transpose()?;
+    let mut profile = requested_profile.unwrap_or_default();
+    profile.user_data_dir = Some(user_data_dir.clone());
     let launched = profile.launch_local().await?;
     let endpoint = launched.endpoint().clone();
     let process_id = launched.process_id();
-    let session = CdpBrowserSession::connect(endpoint.clone()).await?;
+    let session = CdpBrowserSession::connect_with_profile(endpoint.clone(), &profile).await?;
     session.navigate(url, false).await?;
     sleep(Duration::from_millis(150)).await;
     let state = session.state(screenshot).await?;
@@ -86,11 +114,19 @@ pub(crate) async fn start_persistent_session(
         endpoint,
         user_data_dir,
         process_id,
+        browser_profile_fingerprint,
         status: None,
     };
     write_session_record(&record)?;
     let _ = launched.detach();
     Ok((annotate_session_status(record), session, state))
+}
+
+pub(crate) fn browser_profile_fingerprint(profile: &BrowserProfile) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let bytes = serde_json::to_vec(profile)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 pub(crate) async fn stop_persistent_session(id: &str) -> anyhow::Result<StoredSession> {

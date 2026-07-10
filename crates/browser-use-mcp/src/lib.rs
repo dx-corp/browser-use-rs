@@ -314,6 +314,9 @@ pub struct SessionRecord {
     /// Process id when the session was launched locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_id: Option<u32>,
+    /// SHA-256 fingerprint of the browser profile required to reconnect safely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_profile_fingerprint: Option<String>,
     /// Last observed status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<SessionStatus>,
