@@ -147,6 +147,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     needs: prepare-release
     if: needs.prepare-release.outputs.should_release == 'true'
+    permissions:
+      contents: read
+      id-token: write
     env:
       RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
     strategy:
@@ -225,12 +228,13 @@ jobs:
             grep -q '"interactive_elements": 2' dist/smoke/state.json
           fi
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload packaged artifact to GCS
+        uses: ./.github/actions/gcs-artifacts
         with:
-          retention-days: 14
-          name: browser-use-rs-${{ matrix.label }}
-          path: dist/*.tar.gz
+          mode: upload
+          prefix: browser-use-rs/release/${{ github.run_id }}/binaries
+          paths: dist/*.tar.gz
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
 
   publish-release:
     name: Publish release assets
@@ -239,6 +243,9 @@ jobs:
       - prepare-release
       - build-binary
     if: needs.prepare-release.outputs.should_release == 'true'
+    permissions:
+      contents: write
+      id-token: write
     env:
       RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
       RELEASE_TYPE: ${{ needs.prepare-release.outputs.release_type }}
@@ -250,12 +257,13 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.prepare-release.outputs.ref }}
 
-      - name: Download packaged artifacts
-        uses: actions/download-artifact@v4
+      - name: Download packaged artifacts from GCS
+        uses: ./.github/actions/gcs-artifacts
         with:
-          pattern: browser-use-rs-*
-          merge-multiple: true
-          path: dist
+          mode: download
+          prefix: browser-use-rs/release/${{ github.run_id }}/binaries
+          destination: dist
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
 
       - name: Generate checksums
         run: |
@@ -316,16 +324,17 @@ jobs:
             cat docs/RELEASE.md
           } > dist/RELEASE_NOTES.md
 
-      - name: Upload release bundle artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload release bundle to GCS
+        uses: ./.github/actions/gcs-artifacts
         with:
-          retention-days: 14
-          name: browser-use-rs-release
-          path: |
+          mode: upload
+          prefix: browser-use-rs/release/${{ github.run_id }}/release-bundle
+          paths: |
             dist/*.tar.gz
             dist/SHA256SUMS
             dist/homebrew/browser-use-rs.rb
             dist/RELEASE_NOTES.md
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
