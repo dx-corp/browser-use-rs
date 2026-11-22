@@ -1,5 +1,10 @@
 # browser-use-rs
 
+> **This repository is archived.** browser-use-rs now lives in the Deixic
+> monorepo at [`rust/crates/browser-use`](https://github.com/dx-corp/mono/tree/main/rust/crates/browser-use)
+> (moved in dx-corp/mono#24934; the sandbox image builds it from there since
+> dx-corp/mono#24943). Open issues and changes there.
+
 `browser-use-rs` is the EvalOps Rust port of
 [`browser-use`](https://github.com/browser-use/browser-use). It aims for
 behavioral compatibility at the public contract level rather than a line-by-line
