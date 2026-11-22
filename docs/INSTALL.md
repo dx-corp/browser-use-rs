@@ -1,5 +1,10 @@
 # Install
 
+> **Archived.** The commands below install the last code published from this
+> repository, which no longer changes. The maintained code is in the Deixic
+> monorepo at [`rust/crates/browser-use`](https://github.com/dx-corp/mono/tree/main/rust/crates/browser-use);
+> build `browser-use-cli` from a checkout of that repository instead.
+
 `browser-use-rs` currently publishes Linux x86_64 and macOS release binaries
 plus source install paths.
 
